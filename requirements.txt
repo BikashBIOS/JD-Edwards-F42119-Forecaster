@@ -1,0 +1,13 @@
+pandas
+numpy
+scikit-learn
+ipykernel
+seaborn
+matplotlib
+statsmodels
+prophet
+lstm
+tensorflow
+pmdarima
+streamlit
+
