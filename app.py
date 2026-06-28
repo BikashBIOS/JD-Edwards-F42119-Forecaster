@@ -143,6 +143,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Initialize ma_forecasts at top level so it's always defined
+ma_forecasts = {}
 
 # ══════════════════════════════════════════════════════════════
 # PIPELINE FUNCTIONS
@@ -371,6 +373,60 @@ def format_lak(val):
         return f"LAK {val/1e6:.1f}M"
     return f"LAK {val:,.0f}"
 
+# ══════════════════════════════════════════════════════════════
+# MOVING AVERAGE BASELINE FUNCTIONS
+# ══════════════════════════════════════════════════════════════
+
+def simple_moving_average(series, window):
+    """JDE-style Simple Moving Average — Balance Forward method."""
+    return series.iloc[-window:].mean()
+
+def weighted_moving_average(series, window):
+    """JDE Weighted Moving Average — recent months weighted higher."""
+    data    = series.iloc[-window:].values
+    weights = np.arange(1, window + 1)
+    return np.average(data, weights=weights)
+
+def exponential_smoothing(series, alpha=0.3):
+    """JDE Exponential Smoothing — alpha=0.3 default."""
+    values   = series.values
+    smoothed = [values[0]]
+    for i in range(1, len(values)):
+        smoothed.append(alpha * values[i] + (1 - alpha) * smoothed[-1])
+    return smoothed[-1]
+
+def compute_ma_forecasts(monthly, target_month):
+    """
+    Compute all MA forecasts for target month.
+    Returns dict of method -> {qty, rev} forecasts.
+    """
+    # Filter data up to month before target
+    cutoff = target_month - pd.DateOffset(months=1)
+    series  = monthly[monthly['ds'] <= cutoff].copy()
+
+    qty_series = series['total_qty']
+    rev_series = series['total_revenue']
+
+    methods = {
+        'SMA-3'  : lambda s: simple_moving_average(s, 3),
+        'SMA-6'  : lambda s: simple_moving_average(s, 6),
+        'SMA-12' : lambda s: simple_moving_average(s, min(12, len(s))),
+        'WMA-6'  : lambda s: weighted_moving_average(s, min(6, len(s))),
+        'EXP'    : lambda s: exponential_smoothing(s, alpha=0.3)
+    }
+
+    results = {}
+    for name, fn in methods.items():
+        try:
+            results[name] = {
+                'qty': fn(qty_series),
+                'rev': fn(rev_series)
+            }
+        except Exception:
+            results[name] = {'qty': 0, 'rev': 0}
+
+    return results
+
 
 def forecast_chart(monthly, results_dict, target, next_month_label):
     """Plot historical + all model forecasts."""
@@ -536,6 +592,9 @@ if run_btn:
     if not all_results:
         st.warning("Please select at least one model to run.")
         st.stop()
+    forecast_target_month = monthly['ds'].max() + pd.DateOffset(months=1)
+    ma_forecasts = compute_ma_forecasts(monthly, next_month)
+    st.session_state['ma_forecasts'] = ma_forecasts
 
     # ── Compute average MAPE per model ─────────────────────────
     model_scores = {}
@@ -712,6 +771,179 @@ if run_btn:
 
         st.success(f"🏆 **Real-world winner: {real_winner}** with {val_df.iloc[0]['Avg MAPE']:.2f}% average MAPE on actual January 2026 data")
 
+        # ══════════════════════════════════════════════════════════
+        # MOVING AVERAGE BASELINE COMPARISON
+        # ══════════════════════════════════════════════════════════
+        st.markdown('<div class="section-header">📉 JDE Baseline — Moving Average Comparison</div>',
+                    unsafe_allow_html=True)
+
+        st.markdown("""
+        <div style='background:#1a1f2e;border-radius:10px;padding:1rem 1.2rem;
+        border-left:4px solid #F59E0B;margin-bottom:1rem;color:#CBD5E1;font-size:0.85rem;'>
+        <b>What is this?</b> JDE's native forecasting uses Simple Moving Average (SMA) —
+        no ML, no seasonality handling, no changepoint detection.
+        We benchmark our ML models against all JDE-equivalent MA methods
+        on the <b>exact same forecast target</b> to quantify the real improvement.
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Build comparison table — read from session state
+        ma_data = st.session_state.get('ma_forecasts', {})
+
+        ma_rows = []
+        for ma_name, ma_vals in ma_data.items():
+            ma_rows.append({
+                'Method'  : f'{ma_name} (JDE Baseline)',
+                'Pred Qty': f"{ma_vals['qty']:,.0f}",
+                'Pred Rev': format_lak(ma_vals['rev']),
+                'Qty_raw' : ma_vals['qty'],
+                'Rev_raw' : ma_vals['rev'],
+                'Type'    : 'MA Baseline'
+            })
+
+        # Add ML models
+        for model_name, res in all_results.items():
+            ma_rows.append({
+                'Method'  : f'{model_name} {"🏆" if model_name == best_model else ""}',
+                'Pred Qty': f"{res['Quantity']['forecast']:,.0f}",
+                'Pred Rev': format_lak(res['Revenue']['forecast']),
+                'Qty_raw' : res['Quantity']['forecast'],
+                'Rev_raw' : res['Revenue']['forecast'],
+                'Type'    : 'ML Model'
+            })
+
+        if ma_rows and ma_data:
+            # MA vs ML chart
+            fig_ma, axes_ma = plt.subplots(1, 2, figsize=(16, 6))
+            fig_ma.patch.set_facecolor('#0f1117')
+            fig_ma.suptitle(
+                f'ML Models vs JDE Moving Average Baselines — {next_month_label}',
+                fontsize=13, fontweight='bold', color='#FFFFFF'
+            )
+
+            ml_color  = '#3B82F6'
+            ma_color_list = ['#EF4444','#EC4899','#8B5CF6','#F97316','#6B7280']
+
+            all_names  = [r['Method'] for r in ma_rows]
+            all_qty    = [r['Qty_raw'] for r in ma_rows]
+            all_rev    = [r['Rev_raw'] for r in ma_rows]
+            bar_colors = [
+                ml_color if r['Type'] == 'ML Model'
+                else ma_color_list[i % len(ma_color_list)]
+                for i, r in enumerate(ma_rows)
+            ]
+
+            x = np.arange(len(all_names))
+
+            for ax in axes_ma:
+                ax.set_facecolor('#1a1f2e')
+                ax.tick_params(colors='#8B9EC7')
+                ax.spines[:].set_color('#2a3347')
+
+            axes_ma[0].bar(x, all_qty, color=bar_colors, alpha=0.85, width=0.6)
+            axes_ma[0].set_title('Quantity Forecast', color='#FFFFFF', fontweight='bold')
+            axes_ma[0].set_ylabel('Quantity (Units)', color='#8B9EC7')
+            axes_ma[0].set_xticks(x)
+            axes_ma[0].set_xticklabels(all_names, rotation=30, ha='right',
+                                        fontsize=8, color='#CBD5E1')
+            axes_ma[0].yaxis.set_major_formatter(
+                mticker.FuncFormatter(lambda v, _: f'{v:,.0f}'))
+
+            axes_ma[1].bar(x, [r/1e9 for r in all_rev], color=bar_colors, alpha=0.85, width=0.6)
+            axes_ma[1].set_title('Revenue Forecast (LAK)', color='#FFFFFF', fontweight='bold')
+            axes_ma[1].set_ylabel('Revenue (LAK Billions)', color='#8B9EC7')
+            axes_ma[1].set_xticks(x)
+            axes_ma[1].set_xticklabels(all_names, rotation=30, ha='right',
+                                        fontsize=8, color='#CBD5E1')
+            axes_ma[1].yaxis.set_major_formatter(
+                mticker.FuncFormatter(lambda v, _: f'{v:.0f}B'))
+
+            from matplotlib.patches import Patch
+            legend_elements = [
+                Patch(facecolor=ml_color,   label='ML Models'),
+                Patch(facecolor='#EF4444', label='JDE MA Baselines')
+            ]
+            axes_ma[1].legend(handles=legend_elements, facecolor='#1a1f2e',
+                            edgecolor='#2a3347', labelcolor='#CBD5E1', fontsize=9)
+
+            plt.tight_layout()
+            st.pyplot(fig_ma)
+
+            # Forecast comparison table
+            st.markdown("#### 📊 Forecast Comparison Table")
+            display_df = pd.DataFrame([{
+                'Method'  : r['Method'],
+                'Type'    : r['Type'],
+                'Pred Qty': r['Pred Qty'],
+                'Pred Rev': r['Pred Rev']
+            } for r in ma_rows])
+            st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+        else:
+            st.info("MA baselines will appear after running the forecast pipeline.")
+
+        # Error vs actuals — only when validation file uploaded
+        if val_file:
+            actual_qty_val = df_val['qty_shipped'].sum()
+            actual_rev_val = df_val['extended_price'].sum()
+
+            st.markdown("#### 🎯 Error vs January 2026 Actuals")
+
+            comparison_rows = []
+
+            # ML models
+            for model_name, res in all_results.items():
+                qty_fc   = res['Quantity']['forecast']
+                rev_fc   = res['Revenue']['forecast']
+                qty_mape = abs((qty_fc - actual_qty_val) / actual_qty_val * 100)
+                rev_mape = abs((rev_fc - actual_rev_val) / actual_rev_val * 100)
+                comparison_rows.append({
+                    'Model'    : f'{model_name} {"🏆" if model_name == best_model else ""}',
+                    'Type'     : 'ML Model',
+                    'Qty MAPE' : round(qty_mape, 2),
+                    'Rev MAPE' : round(rev_mape, 2),
+                    'Avg MAPE' : round((qty_mape + rev_mape) / 2, 2)
+                })
+
+            # MA baselines
+            for ma_name, ma_vals in st.session_state.get('ma_forecasts', {}).items():
+                qty_mape = abs((ma_vals['qty'] - actual_qty_val) / actual_qty_val * 100)
+                rev_mape = abs((ma_vals['rev'] - actual_rev_val) / actual_rev_val * 100)
+                comparison_rows.append({
+                    'Model'    : f'{ma_name} (JDE)',
+                    'Type'     : 'MA Baseline',
+                    'Qty MAPE' : round(qty_mape, 2),
+                    'Rev MAPE' : round(rev_mape, 2),
+                    'Avg MAPE' : round((qty_mape + rev_mape) / 2, 2)
+                })
+
+            if comparison_rows:
+                comp_df  = pd.DataFrame(comparison_rows).sort_values('Avg MAPE')
+                ml_rows  = comp_df[comp_df['Type'] == 'ML Model']
+                ma_rows_f = comp_df[comp_df['Type'] == 'MA Baseline']
+
+                st.dataframe(comp_df.reset_index(drop=True),
+                            use_container_width=True, hide_index=True)
+
+                if not ml_rows.empty and not ma_rows_f.empty:
+                    best_ml_mape = ml_rows['Avg MAPE'].min()
+                    best_ma_mape = ma_rows_f['Avg MAPE'].min()
+                    best_ma_name = ma_rows_f.sort_values('Avg MAPE').iloc[0]['Model']
+                    improvement  = ((best_ma_mape - best_ml_mape) / best_ma_mape) * 100
+
+                    st.markdown(f"""
+                    <div class="winner-card">
+                        <div class="winner-label">📉 ML vs JDE Baseline Improvement</div>
+                        <div class="winner-name">{improvement:.1f}% Error Reduction</div>
+                        <div class="winner-mape">
+                            Best ML: {best_ml_mape:.2f}% avg MAPE &nbsp;|&nbsp;
+                            Best JDE Baseline ({best_ma_name}): {best_ma_mape:.2f}% avg MAPE
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("Run the forecast pipeline first to see ML vs JDE baseline comparison.")
+
     # ══════════════════════════════════════════════════════════
     # DOWNLOAD RESULTS
     # ══════════════════════════════════════════════════════════
@@ -727,6 +959,19 @@ if run_btn:
             'Test_Rev_MAPE'   : res['Revenue']['mape'],
             'Avg_MAPE'        : model_scores[model_name],
             'Is_Best'         : model_name == best_model
+        })
+
+    # Add MA baselines to download
+    for ma_name, ma_vals in ma_forecasts.items():
+        summary_rows.append({
+            'Model'           : f'{ma_name} (JDE Baseline)',
+            'Type'            : 'MA Baseline',
+            'Jan2026_Qty'     : ma_vals['qty'],
+            'Jan2026_Rev_LAK' : ma_vals['rev'],
+            'Test_Qty_MAPE'   : None,
+            'Test_Rev_MAPE'   : None,
+            'Avg_MAPE'        : None,
+            'Is_Best'         : False
         })
 
     summary_df = pd.DataFrame(summary_rows)
