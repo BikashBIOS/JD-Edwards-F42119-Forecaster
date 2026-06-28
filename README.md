@@ -284,6 +284,132 @@ ARIMA (AutoRegressive Integrated Moving Average) is a classical statistical mode
 
 ---
 
+## 📉 JDE Moving Average Baseline Comparison
+
+### Why we built this comparison
+
+Most ML forecasting projects compare models only against each other — Prophet vs LSTM vs ARIMA. A rigorous production benchmark requires comparing against the **actual system being replaced**. JDE's native forecasting module uses Simple Moving Average (SMA) as its default method — no machine learning, no seasonality detection, no changepoint handling.
+
+By benchmarking all ML models against all JDE-equivalent Moving Average methods on the **exact same January 2026 holdout validation set**, we quantify the real-world business value of our solution in numbers any interviewer or client can understand.
+
+---
+
+### Understanding the Moving Average Methods
+
+**What is a Moving Average?**
+A Moving Average predicts the next period's value by averaging the last N periods. It assumes the future will look like a smoothed version of the recent past — no trend extrapolation, no seasonality, no learning from patterns.
+
+Think of it like a shopkeeper who says:
+> *"I sold an average of 500,000 units per month over the last 6 months — so I'll order 500,000 units next month."*
+
+Simple, fast, and widely used — but blind to growth trends, seasonal spikes, and structural breaks.
+
+---
+
+**Method 1 — SMA-3: Simple 3-Month Moving Average**
+
+**JDE equivalent:** Balance Forward Method 1
+
+```
+Forecast = (Month-1 + Month-2 + Month-3) / 3
+```
+
+The simplest possible forecast — averages the last 3 months equally. Very reactive to recent changes but highly sensitive to outliers. If one month had unusually high sales (promotion, bulk order), it pulls the forecast up even if that event won't repeat.
+
+**Strength:** Reacts quickly to recent demand shifts.
+**Weakness:** Too noisy — outliers distort the forecast significantly. Only uses 3 data points, ignoring all other history.
+
+**January 2026 result:** Predicted 546,841 units vs actual 910,619 — **39.9% error.**
+
+---
+
+**Method 2 — SMA-6: Simple 6-Month Moving Average**
+
+**JDE equivalent:** Balance Forward Method 2
+
+```
+Forecast = (Month-1 + Month-2 + ... + Month-6) / 6
+```
+
+Same as SMA-3 but uses 6 months of history. Smoother than SMA-3 — less sensitive to individual outliers, but also slower to react to genuine demand changes.
+
+**Strength:** More stable than SMA-3, less noise.
+**Weakness:** Still treats all 6 months equally — a month from 6 months ago gets the same weight as last month. Misses strong upward trends because old lower values drag the average down.
+
+**January 2026 result:** Predicted 522,199 units vs actual 910,619 — **42.7% error** (worse than SMA-3 because the 6-month window included months with lower volumes, pulling the forecast down further).
+
+---
+
+**Method 3 — SMA-12: Simple 12-Month Moving Average**
+
+**JDE equivalent:** Percent Over Last Year
+
+```
+Forecast = (Month-1 + Month-2 + ... + Month-12) / 12
+```
+
+Uses a full year of history — one complete seasonal cycle. This is the most commonly used MA method in JDE implementations because it naturally smooths out monthly seasonality by averaging across all 12 months.
+
+**Strength:** Best MA method for stable, mature businesses with consistent demand. Captures one full seasonal cycle.
+**Weakness:** Very slow to react to growth trends. In a growing business (like our client — volumes grew significantly in 2025), the 12-month average is heavily dragged down by older, lower-volume months.
+
+**January 2026 result:** Predicted 580,737 units vs actual 910,619 — **36.2% error** (best MA method because the 12-month window captured more recent high-volume months).
+
+---
+
+**Method 4 — WMA-6: Weighted 6-Month Moving Average**
+
+**JDE equivalent:** Weighted Moving Average
+
+```
+Forecast = (1×Month-6 + 2×Month-5 + 3×Month-4 + 4×Month-3 + 5×Month-2 + 6×Month-1) / 21
+```
+
+An improvement over SMA — assigns higher weights to more recent months. The most recent month gets weight 6, the oldest month gets weight 1. This makes the forecast more responsive to recent changes while still using 6 months of history.
+
+**Strength:** More responsive than SMA-6 because recent months matter more.
+**Weakness:** Still limited to 6 months. The weighting is linear — doesn't learn the optimal weights from data the way ML models do.
+
+**January 2026 result:** Predicted 528,707 units vs actual 910,619 — **41.9% error.**
+
+---
+
+**Method 5 — EXP: Exponential Smoothing (α = 0.3)**
+
+**JDE equivalent:** Exponential Smoothing with smoothing constant
+
+```
+Forecast(t) = α × Actual(t-1) + (1-α) × Forecast(t-1)
+```
+
+Where α = 0.3 (JDE default smoothing constant).
+
+The most sophisticated MA variant — gives exponentially decreasing weight to older observations. With α=0.3, the most recent month gets 30% weight, the previous month gets 21%, the one before gets 14.7%, and so on — weights decay exponentially into the past.
+
+**Strength:** Theoretically optimal weighting — older data matters less without an arbitrary cutoff. No fixed window size — uses all available history.
+**Weakness:** Single α parameter controls both smoothness and responsiveness — hard to tune without ML. Doesn't handle trend or seasonality without extensions (Holt-Winters). α=0.3 is a standard default, not optimised for this specific dataset.
+
+**January 2026 result:**  — **41.0% error.**
+
+---
+
+### Complete Results — All Methods vs January 2026 Actuals
+
+
+| Method | Type | Qty Error | Rev Error | Avg MAPE |
+|---|---|---|---|---|---|---|
+| **Prophet** | ML Model | -7.3% | -10.6% | **8.96% 🏆** |
+| ARIMA | ML Model | -26.3% | -26.2% | 26.23% |
+| Ensemble | ML Model | -26.2% | -28.4% | 27.28% |
+| LSTM | ML Model | -45.0% | -48.3% | 46.66% |
+| **SMA-12** | JDE Baseline | -36.2% | -39.3% | **37.78% (Best MA)** |
+| EXP | JDE Baseline | -41.0% | -43.1% | 42.06% |
+| WMA-6 | JDE Baseline | -41.9% | -43.7% | 42.83% |
+| SMA-3 | JDE Baseline | -39.9% | -41.7% | 40.84% |
+| SMA-6 | JDE Baseline | -42.7% | -44.7% | 43.69% |
+
+---
+
 ## 📊 Model Results
 
 ### Test Set Performance (Oct–Dec 2025)
@@ -322,6 +448,12 @@ Jan–May 2023 ramp-up volumes were ~17x lower than normal operations. This dist
 
 **6. Prophet's strength: long-term trend extrapolation**
 January 2026 actual (910K units) was significantly higher than all model forecasts — the business continued growing strongly. Prophet's trend component extended the long-term growth trajectory most accurately, while LSTM anchored to recent plateau months.
+
+**7. Baseline comparison on the same holdout set is non-negotiable**
+Comparing ML models only against each other is insufficient for a production claim. By benchmarking all 5 JDE-equivalent Moving Average methods (SMA-3, SMA-6, SMA-12, WMA-6, Exponential Smoothing) against the exact same January 2026 holdout validation set, we proved Prophet's superiority with a concrete number: 76.3% error reduction vs the best MA baseline. This kind of rigorous comparison is what separates a portfolio project from a production claim.
+
+**8. Growth trends and seasonal spikes expose MA limitations**
+All 5 MA methods under-predicted January 2026 by 36–43% because they average historical values without extrapolating trends. January 2026 actual (910,619 units) was 60% above the 2025 monthly average (~570K). MA methods smooth over this — Prophet's explicit trend + seasonality modelling was the key differentiator.
 
 ---
 
@@ -383,7 +515,7 @@ openpyxl>=3.1.0
 *BikashBIOS*
 
 [![GitHub](https://img.shields.io/badge/GitHub-BikashBIOS-black)](https://github.com/BikashBIOS)
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-bikash-ranjan-ojha-5b4953178-blue)](https://linkedin.com/in/bikash-ranjan-ojha-5b4953178)
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-bikash--ranjan--ojha--5b4953178-blue)](https://linkedin.com/in/bikash-ranjan-ojha-5b4953178)
 
 ---
 
