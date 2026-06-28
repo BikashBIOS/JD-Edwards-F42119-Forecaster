@@ -33,6 +33,7 @@ What makes this project unique: **all three forecasts are validated against real
 - [Understanding the Models](#-understanding-the-models)
 - [Model Results](#-model-results)
 - [Real World Validation — January 2026](#-real-world-validation--january-2026)
+- [JDE Moving Average Baseline Comparison](#-jde-moving-average-baseline-comparison)
 - [Key Learnings](#-key-learnings)
 - [How to Run](#-how-to-run)
 - [Future Scope](#-future-scope)
