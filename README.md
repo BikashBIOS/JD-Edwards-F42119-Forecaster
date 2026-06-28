@@ -397,7 +397,7 @@ The most sophisticated MA variant — gives exponentially decreasing weight to o
 
 
 | Method | Type | Qty Error | Rev Error | Avg MAPE |
-|---|---|---|---|---|---|---|
+|---|---|---|---|---|
 | **Prophet** | ML Model | -7.3% | -10.6% | **8.96% 🏆** |
 | ARIMA | ML Model | -26.3% | -26.2% | 26.23% |
 | Ensemble | ML Model | -26.2% | -28.4% | 27.28% |
